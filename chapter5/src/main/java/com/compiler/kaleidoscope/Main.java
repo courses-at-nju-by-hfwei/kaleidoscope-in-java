@@ -83,12 +83,6 @@ public class Main {
         LLVMInitializeNativeAsmParser();
         LLVMLinkInMCJIT();
 
-        LLVMMCJITCompilerOptions options = new LLVMMCJITCompilerOptions();
-        if (LLVMCreateMCJITCompilerForModule(engine, CodeGenerator.theModule, options, 3, error) != 0) {
-            System.err.println("Failed to create JIT compiler: " + error.getString());
-            LLVMDisposeMessage(error);
-            return;
-        }
         // Prime the first token.
         getNextToken();
 
