@@ -45,6 +45,12 @@ public class Lexer {
             if (identifierStr.equals("else")) {
                 return TOK_ELSE.getValue();
             }
+            if (identifierStr.equals("for")) {
+                return TOK_FOR.getValue();
+            }
+            if (identifierStr.equals("in")) {
+                return TOK_IN.getValue();
+            }
             return TOK_IDENTIFIER.getValue();
         }
 

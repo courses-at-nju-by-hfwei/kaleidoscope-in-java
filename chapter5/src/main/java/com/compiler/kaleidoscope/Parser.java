@@ -124,6 +124,8 @@ public class Parser {
             return parseParenExpr();
         } else if (curTok == TOK_IF.getValue()){
             return parseIfExpr();
+        } else if (curTok == TOK_FOR.getValue()) {
+            return parseForExpr();
         } else {
             return Logger.logError("unknown token when expecting an expression");
         }
@@ -258,6 +260,60 @@ public class Parser {
         }
 
         return new IfExprAST(cond, then, Else);
+    }
+
+    /// forexpr ::= 'for' identifier '=' expr ',' expr (',' expr)? 'in' expression
+    public static ExprAST parseForExpr() {
+        getNextToken(); // eat the for.
+
+        if (curTok != TOK_IDENTIFIER.getValue()) {
+            return Logger.logError("expected identifier after for");
+        }
+
+        String idName = Lexer.identifierStr;
+        getNextToken(); // eat identifier.
+
+        if (curTok != '=') {
+            return Logger.logError("expected '=' after for");
+        }
+        getNextToken(); // eat '='.
+
+        ExprAST start = parseExpression();
+        if (start == null) {
+            return null;
+        }
+
+        if (curTok != ',') {
+            return Logger.logError("expected ',' after for start value");
+        }
+        getNextToken();
+
+        ExprAST end = parseExpression();
+        if (end == null) {
+            return null;
+        }
+
+        // The step value is optional.
+        ExprAST step = null;
+        if (curTok == ',') {
+            getNextToken();
+            step = parseExpression();
+            if (step == null) {
+                return null;
+            }
+        }
+
+        if (curTok != TOK_IN.getValue()) {
+            return Logger.logError("expected 'in' after for");
+        }
+        getNextToken();
+
+        ExprAST body = parseExpression();
+        if (body == null) {
+            return null;
+        }
+
+        return new ForExprAST(idName, start, end, step, body);
     }
 
     private static int anonCount = 0;
