@@ -15,6 +15,7 @@
         <module>chapter2</module>
         <module>chapter3</module>
         <module>chapter4</module>
+        <module>chapter5</module>
     </modules>
     <artifactId>kaleidoscope</artifactId>
     <version>1.0.0</version>
