@@ -114,6 +114,7 @@ public class Parser {
     ///   ::= identifierexpr
     ///   ::= numberexpr
     ///   ::= parenexpr
+    ///   ::= ifexpr
     public static ExprAST parsePrimary() {
         if (curTok == TOK_IDENTIFIER.getValue()) {
             return parseIdentifierExpr();
@@ -121,6 +122,8 @@ public class Parser {
             return parseNumberExpr();
         } else if (curTok == '(') {
             return parseParenExpr();
+        } else if (curTok == TOK_IF.getValue()){
+            return parseIfExpr();
         } else {
             return Logger.logError("unknown token when expecting an expression");
         }
@@ -222,6 +225,39 @@ public class Parser {
     public static PrototypeAST parseExtern() {
         getNextToken(); // eat extern.
         return parsePrototype();
+    }
+
+    /// ifexpr ::= 'if' expression 'then' expression 'else' expression
+    public static ExprAST parseIfExpr() {
+        getNextToken(); // eat the if.
+
+        // condition.
+        ExprAST cond = parseExpression();
+        if (cond == null) {
+            return null;
+        }
+
+        if (curTok != TOK_THEN.getValue()) {
+            return Logger.logError("expected then");
+        }
+        getNextToken(); // eat the then.
+
+        ExprAST then = parseExpression();
+        if (then == null) {
+            return null;
+        }
+
+        if (curTok != TOK_ELSE.getValue()) {
+            return Logger.logError("expected else");
+        }
+        getNextToken(); // eat the else.
+
+        ExprAST Else = parseExpression();
+        if (Else == null) {
+            return null;
+        }
+
+        return new IfExprAST(cond, then, Else);
     }
 
     private static int anonCount = 0;

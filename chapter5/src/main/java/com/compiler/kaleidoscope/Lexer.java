@@ -36,6 +36,15 @@ public class Lexer {
             if (identifierStr.equals("extern")) {
                 return TOK_EXTERN.getValue();
             }
+            if (identifierStr.equals("if")) {
+                return TOK_IF.getValue();
+            }
+            if (identifierStr.equals("then")) {
+                return TOK_THEN.getValue();
+            }
+            if (identifierStr.equals("else")) {
+                return TOK_ELSE.getValue();
+            }
             return TOK_IDENTIFIER.getValue();
         }
 

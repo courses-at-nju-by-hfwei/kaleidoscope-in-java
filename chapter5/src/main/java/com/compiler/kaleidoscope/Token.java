@@ -11,7 +11,13 @@ public enum Token {
 
     // primary
     TOK_IDENTIFIER(-4),
-    TOK_NUMBER(-5);
+    TOK_NUMBER(-5),
+
+    // control
+    TOK_IF(-6),
+    TOK_THEN(-7),
+    TOK_ELSE(-8);
+
     private final int value;
 
     Token(int value) {
