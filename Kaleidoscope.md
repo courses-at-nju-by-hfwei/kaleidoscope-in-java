@@ -1002,7 +1002,7 @@ This wraps up the third chapter of the Kaleidoscope tutorial. Up next, we’ll d
 
 ## 3.7. Output IR
 
-在原教程中，在第四章才能看到这章生成的IR。为了展示一些这章的成果，我修改了一下`handleDefinition`, `handleExtern`, `handleTopLevelExpression`，在解析完AST后通过调用xxxAST.codegen()生成IR，并在程序结束前dump出来。
+在原教程中，在第四章才能看到这章生成的IR。为了展示一些这章的成果，我修改了一下`handleDefinition`, `handleExtern`, `handleTopLevelExpression`，在解析完AST后通过调用`xxxAST.codegen()`生成IR，并在程序结束前dump出来。
 
 ```java
 public static void handleDefinition() {
@@ -1050,3 +1050,786 @@ public static void main(String[] args) {
 }
 ```
 
+# 4. Kaleidoscope: Adding JIT and Optimizer Support
+
+## 4.1. Chapter 4 Introduction
+
+Welcome to Chapter 4 of the “[Implementing a language with LLVM](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html)” tutorial. Chapters 1-3 described the implementation of a simple language and added support for generating LLVM IR. This chapter describes two new techniques: adding optimizer support to your language, and adding JIT compiler support. These additions will demonstrate how to get nice, efficient code for the Kaleidoscope language.
+
+## 4.2. Trivial Constant Folding
+
+Our demonstration for Chapter 3 is elegant and easy to extend. Unfortunately, it does not produce wonderful code. The IRBuilder, however, does give us obvious optimizations when compiling simple code:
+
+```
+ready> def test(x) 1+2+x;
+Read function definition:
+define double @test(double %x) {
+entry:
+        %addtmp = fadd double 3.000000e+00, %x
+        ret double %addtmp
+}
+```
+
+This code is not a literal transcription of the AST built by parsing the input. That would be:
+
+```
+ready> def test(x) 1+2+x;
+Read function definition:
+define double @test(double %x) {
+entry:
+        %addtmp = fadd double 2.000000e+00, 1.000000e+00
+        %addtmp1 = fadd double %addtmp, %x
+        ret double %addtmp1
+}
+```
+
+Constant folding, as seen above, in particular, is a very common and very important optimization: so much so that many language implementors implement constant folding support in their AST representation.
+
+With LLVM, you don’t need this support in the AST. Since all calls to build LLVM IR go through the LLVM IR builder, the builder itself checked to see if there was a constant folding opportunity when you call it. If so, it just does the constant fold and return the constant instead of creating an instruction.
+
+Well, that was easy :). In practice, we recommend always using `IRBuilder` when generating code like this. It has no “syntactic overhead” for its use (you don’t have to uglify your compiler with constant checks everywhere) and it can dramatically reduce the amount of LLVM IR that is generated in some cases (particular for languages with a macro preprocessor or that use a lot of constants).
+
+On the other hand, the `IRBuilder` is limited by the fact that it does all of its analysis inline with the code as it is built. If you take a slightly more complex example:
+
+```
+ready> def test(x) (1+2+x)*(x+(1+2));
+ready> Read function definition:
+define double @test(double %x) {
+entry:
+        %addtmp = fadd double 3.000000e+00, %x
+        %addtmp1 = fadd double %x, 3.000000e+00
+        %multmp = fmul double %addtmp, %addtmp1
+        ret double %multmp
+}
+```
+
+In this case, the LHS and RHS of the multiplication are the same value. We’d really like to see this generate “`tmp = x+3; result = tmp*tmp;`” instead of computing “`x+3`” twice.
+
+Unfortunately, no amount of local analysis will be able to detect and correct this. This requires two transformations: reassociation of expressions (to make the add’s lexically identical) and Common Subexpression Elimination (CSE) to delete the redundant add instruction. Fortunately, LLVM provides a broad range of optimizations that you can use, in the form of “passes”.
+
+## 4.3. LLVM Optimization Passes
+
+LLVM provides many optimization passes, which do many different sorts of things and have different tradeoffs. Unlike other systems, LLVM doesn’t hold to the mistaken notion that one set of optimizations is right for all languages and for all situations. LLVM allows a compiler implementor to make complete decisions about what optimizations to use, in which order, and in what situation.
+
+As a concrete example, LLVM supports both “whole module” passes, which look across as large of body of code as they can (often a whole file, but if run at link time, this can be a substantial portion of the whole program). It also supports and includes “per-function” passes which just operate on a single function at a time, without looking at other functions. For more information on passes and how they are run, see the [How to Write a Pass](https://llvm.org/docs/WritingAnLLVMPass.html) document and the [List of LLVM Passes](https://llvm.org/docs/Passes.html).
+
+For Kaleidoscope, we are currently generating functions on the fly, one at a time, as the user types them in. We aren’t shooting for the ultimate optimization experience in this setting, but we also want to catch the easy and quick stuff where possible. As such, we will choose to run a few per-function optimizations as the user types the function in. If we wanted to make a “static Kaleidoscope compiler”, we would use exactly the code we have now, except that we would defer running the optimizer until the entire file has been parsed.
+
+In order to get per-function optimizations going, we need to set up a [FunctionPassManager](https://llvm.org/docs/WritingAnLLVMPass.html#what-passmanager-doesr) to hold and organize the LLVM optimizations that we want to run. Once we have that, we can add a set of optimizations to run. We’ll need a new FunctionPassManager for each module that we want to optimize, so we’ll write a function to create and initialize both the module and pass manager for us:
+
+```java
+// Open a new module.
+theModule = LLVMModuleCreateWithNameInContext("my cool jit", theContext);
+
+// Create a new pass manager attached to it.
+theFPM = LLVMCreateFunctionPassManagerForModule(theModule);
+
+// Do simple "peephole" optimizations and bit-twiddling optzns.
+LLVMAddInstructionCombiningPass(theFPM);
+// Reassociate expressions.
+LLVMAddReassociatePass(theFPM);
+// Eliminate Common SubExpressions.
+LLVMAddGVNPass(theFPM);
+// Simplify the control flow graph (deleting unreachable blocks, etc).
+LLVMAddCFGSimplificationPass(theFPM);
+
+LLVMInitializeFunctionPassManager(theFPM);
+```
+
+This code initializes the global module `theModule`, and the function pass manager `theFPM`, which is attached to `theModule`. Once the pass manager is set up, we use a series of “add” calls to add a bunch of LLVM passes.
+
+In this case, we choose to add four optimization passes. The passes we choose here are a pretty standard set of “cleanup” optimizations that are useful for a wide variety of code. I won’t delve into what they do but, believe me, they are a good starting place :).
+
+Once the PassManager is set up, we need to make use of it. We do this by running it after our newly created function is constructed (in `FunctionAST.codegen()`), but before it is returned to the client:
+
+```java
+// Finish off the function.
+LLVMBuildRet(CodeGenerator.builder, retVal);
+
+// Validate the generated code, checking for consistency.
+LLVMVerifyFunction(theFunction, LLVMAbortProcessAction);
+
+// Optimize the function.
+LLVMRunFunctionPassManager(CodeGenerator.theFPM, theFunction);
+
+return theFunction;
+```
+
+As you can see, this is pretty straightforward. The `FunctionPassManager` optimizes and updates the LLVM Function* in place, improving (hopefully) its body. With this in place, we can try our test above again:
+
+```
+ready> def test(x) (1+2+x)*(x+(1+2));
+ready> Read function definition:
+define double @test(double %x) {
+entry:
+        %addtmp = fadd double %x, 3.000000e+00
+        %multmp = fmul double %addtmp, %addtmp
+        ret double %multmp
+}
+```
+
+As expected, we now get our nicely optimized code, saving a floating point add instruction from every execution of this function.
+
+LLVM provides a wide variety of optimizations that can be used in certain circumstances. Some [documentation about the various passes](https://llvm.org/docs/Passes.html) is available, but it isn’t very complete. Another good source of ideas can come from looking at the passes that `Clang` runs to get started. The “`opt`” tool allows you to experiment with passes from the command line, so you can see if they do anything.
+
+Now that we have reasonable code coming out of our front-end, let’s talk about executing it!
+
+## 4.4. Adding a JIT Compiler
+
+> 本章节原文使用了`llvm-src/examples/Kaleidoscope/include/KaleidoscopeJIT.h`这个头文件，在java版本中没有，所以对本章节做了简化。
+
+Code that is available in LLVM IR can have a wide variety of tools applied to it. For example, you can run optimizations on it (as we did above), you can dump it out in textual or binary forms, you can compile the code to an assembly file (.s) for some target, or you can JIT compile it. The nice thing about the LLVM IR representation is that it is the “common currency” between many different parts of the compiler.
+
+In this section, we’ll add JIT compiler support to our interpreter. **The basic idea that we want for Kaleidoscope is to have the user enter function bodies as they do now, but immediately evaluate the top-level expressions they type in.** For example, if they type in “1 + 2;”, we should evaluate and print out 3. If they define a function, they should be able to call it from the command line.
+
+为了达到这种效果，我们在Main中添加一个`ExecutionEngine`，初始化并使用它来执行生成的代码。
+
+```java
+public class Main {
+    static LLVMExecutionEngineRef engine = new LLVMExecutionEngineRef();
+    
+    public static void handleTopLevelExpression() {
+        // Evaluate a top-level expression into an anonymous function.
+        FunctionAST topAST = parseTopLevelExpr();
+        if (topAST != null) {
+            System.err.println("Parsed a top-level expr");
+
+            LLVMValueRef code = topAST.codegen();
+            if (code != null) {
+                // fixme: shouldn't create an engine every time running a function
+                if (LLVMCreateExecutionEngineForModule(engine, CodeGenerator.theModule, error) != 0) {
+                    System.err.printf("failed to create execution engine, %s\n", error);
+                    LLVMDisposeMessage(error);
+                    return;
+                }
+                LLVMGenericValueRef result = LLVMRunFunction(engine, code, 0, new PointerPointer<>());
+                System.err.printf("Evaluated to %f\n", LLVMGenericValueToFloat(LLVMDoubleType(), result));
+            }
+        } else {
+            // Skip token for error recovery.
+            getNextToken();
+        }
+    }
+    
+    public static void main(String[] args) {
+        // Initialize LLVM components
+        LLVMInitializeCore(LLVMGetGlobalPassRegistry());
+        LLVMInitializeNativeTarget();
+        LLVMInitializeNativeAsmPrinter();
+        LLVMInitializeNativeAsmParser();
+        LLVMLinkInMCJIT();
+        ...
+    }
+}
+```
+
+这里会有一个bug：当同一个ExecutionEngine执行两次函数时会触发JVM崩溃。所以13-16行在每次运行前会创建一个ExecutionEngine。截止目前还未定位到bug触发的原因。如果读者有解决方法欢迎提交pr。: )
+
+# 5. Kaleidoscope: Extending the Language: Control Flow
+
+## 5.1. Chapter 5 Introduction
+
+Welcome to Chapter 5 of the “[Implementing a language with LLVM](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html)” tutorial. Parts 1-4 described the implementation of the simple Kaleidoscope language and included support for generating LLVM IR, followed by optimizations and a JIT compiler. Unfortunately, as presented, Kaleidoscope is mostly useless: it has no control flow other than call and return. This means that you can’t have conditional branches in the code, significantly limiting its power. In this episode of “build that compiler”, we’ll extend Kaleidoscope to have an if/then/else expression plus a simple ‘for’ loop.
+
+## 5.2. If/Then/Else
+
+Extending Kaleidoscope to support if/then/else is quite straightforward. It basically requires adding support for this “new” concept to the lexer, parser, AST, and LLVM code emitter. This example is nice, because it shows how easy it is to “grow” a language over time, incrementally extending it as new ideas are discovered.
+
+Before we get going on “how” we add this extension, let’s talk about “what” we want. The basic idea is that we want to be able to write this sort of thing:
+
+```
+def fib(x)
+  if x < 3 then
+    1
+  else
+    fib(x-1)+fib(x-2);
+```
+
+In Kaleidoscope, every construct is an expression: there are no statements. As such, the if/then/else expression needs to return a value like any other. Since we’re using a mostly functional form, we’ll have it evaluate its conditional, then return the ‘then’ or ‘else’ value based on how the condition was resolved. This is very similar to the C “?:” expression.
+
+The semantics of the if/then/else expression is that it evaluates the condition to a boolean equality value: **0.0 is considered to be false and everything else is considered to be true.** If the condition is true, the first subexpression is evaluated and returned, if the condition is false, the second subexpression is evaluated and returned. Since Kaleidoscope allows side-effects, this behavior is important to nail down.
+
+Now that we know what we “want”, let’s break this down into its constituent pieces.
+
+### 5.2.1. Lexer Extensions for If/Then/Else
+
+The lexer extensions are straightforward. First we add new enum values for the relevant tokens:
+
+```java
+// control
+TOK_IF(-6),
+TOK_THEN(-7),
+TOK_ELSE(-8)
+```
+
+Once we have that, we recognize the new keywords in the lexer. This is pretty simple stuff:
+
+```java
+if (identifierStr.equals("if")) {
+    return TOK_IF.getValue();
+}
+if (identifierStr.equals("then")) {
+    return TOK_THEN.getValue();
+}
+if (identifierStr.equals("else")) {
+    return TOK_ELSE.getValue();
+}
+```
+
+### 5.2.2. AST Extensions for If/Then/Else
+
+To represent the new expression we add a new AST node for it:
+
+```java
+/// IfExprAST - Expression class for if/then/else.
+public class IfExprAST extends ExprAST{
+    ExprAST cond;
+    ExprAST then;
+    ExprAST Else;
+
+    public IfExprAST(ExprAST cond, ExprAST then, ExprAST Else) {
+        this.cond = cond;
+        this.then = then;
+        this.Else = Else;
+    }
+
+    @Override
+    public LLVMValueRef codegen() {
+    	...
+    }
+```
+
+The AST node just has pointers to the various subexpressions.
+
+### 5.2.3. Parser Extensions for If/Then/Else
+
+Now that we have the relevant tokens coming from the lexer and we have the AST node to build, our parsing logic is relatively straightforward. First we define a new parsing function:
+
+```java
+/// ifexpr ::= 'if' expression 'then' expression 'else' expression
+public static ExprAST parseIfExpr() {
+    getNextToken(); // eat the if.
+
+    // condition.
+    ExprAST cond = parseExpression();
+    if (cond == null) {
+        return null;
+    }
+
+    if (curTok != TOK_THEN.getValue()) {
+        return Logger.logError("expected then");
+    }
+    getNextToken(); // eat the then.
+
+    ExprAST then = parseExpression();
+    if (then == null) {
+        return null;
+    }
+
+    if (curTok != TOK_ELSE.getValue()) {
+        return Logger.logError("expected else");
+    }
+    getNextToken(); // eat the else.
+
+    ExprAST Else = parseExpression();
+    if (Else == null) {
+        return null;
+    }
+
+    return new IfExprAST(cond, then, Else);
+}
+```
+
+Next we hook it up as a primary expression:
+
+```java
+/// primary
+///   ::= identifierexpr
+///   ::= numberexpr
+///   ::= parenexpr
+///   ::= ifexpr
+public static ExprAST parsePrimary() {
+    if (curTok == TOK_IDENTIFIER.getValue()) {
+        return parseIdentifierExpr();
+    } else if (curTok == TOK_NUMBER.getValue()) {
+        return parseNumberExpr();
+    } else if (curTok == '(') {
+        return parseParenExpr();
+    } else if (curTok == TOK_IF.getValue()){
+        return parseIfExpr();
+    } else {
+        return Logger.logError("unknown token when expecting an expression");
+    }
+}
+```
+
+### 5.2.4. LLVM IR for If/Then/Else
+
+Now that we have it parsing and building the AST, the final piece is adding LLVM code generation support. This is the most interesting part of the if/then/else example, because this is where it starts to introduce new concepts. All of the code above has been thoroughly described in previous chapters.
+
+To motivate the code we want to produce, let’s take a look at a simple example. Consider:
+
+```
+extern foo();
+extern bar();
+def baz(x) if x then foo() else bar();
+```
+
+If you disable optimizations, the code you’ll (soon) get from Kaleidoscope looks like this:
+
+```
+declare double @foo()
+
+declare double @bar()
+
+define double @baz(double %x) {
+entry:
+  %ifcond = fcmp one double %x, 0.000000e+00
+  br i1 %ifcond, label %then, label %else
+
+then:       ; preds = %entry
+  %calltmp = call double @foo()
+  br label %ifcont
+
+else:       ; preds = %entry
+  %calltmp1 = call double @bar()
+  br label %ifcont
+
+ifcont:     ; preds = %else, %then
+  %iftmp = phi double [ %calltmp, %then ], [ %calltmp1, %else ]
+  ret double %iftmp
+}
+```
+
+To visualize the control flow graph, you can use a nifty feature of the LLVM ‘[opt](https://llvm.org/cmds/opt.html)’ tool. If you put this LLVM IR into “t.ll” and run “`llvm-as < t.ll | opt -passes=view-cfg`”, [a window will pop up](https://llvm.org/docs/ProgrammersManual.html#viewing-graphs-while-debugging-code) and you’ll see this graph:
+
+![Example CFG](https://draco-picbed.oss-cn-shanghai.aliyuncs.com/img/LangImpl05-cfg.png)
+
+Another way to get this is to call “`F->viewCFG()`” or “`F->viewCFGOnly()`” (where F is a “`Function*`”) either by inserting actual calls into the code and recompiling or by calling these in the debugger. LLVM has many nice features for visualizing various graphs.
+
+Getting back to the generated code, it is fairly simple: the entry block evaluates the conditional expression (“x” in our case here) and compares the result to 0.0 with the “`fcmp one`” instruction (‘one’ is “Ordered and Not Equal”). Based on the result of this expression, the code jumps to either the “then” or “else” blocks, which contain the expressions for the true/false cases.
+
+Once the then/else blocks are finished executing, they both branch back to the ‘ifcont’ block to execute the code that happens after the if/then/else. In this case the only thing left to do is to return to the caller of the function. The question then becomes: how does the code know which expression to return?
+
+The answer to this question involves an important SSA operation: the [Phi operation](http://en.wikipedia.org/wiki/Static_single_assignment_form). If you’re not familiar with SSA, [the wikipedia article](http://en.wikipedia.org/wiki/Static_single_assignment_form) is a good introduction and there are various other introductions to it available on your favorite search engine. The short version is that “execution” of the Phi operation requires “remembering” which block control came from. The Phi operation takes on the value corresponding to the input control block. In this case, **if control comes in from the “then” block, it gets the value of “calltmp”. If control comes from the “else” block, it gets the value of “calltmp1”.**
+
+At this point, you are probably starting to think “Oh no! This means my simple and elegant front-end will have to start generating SSA form in order to use LLVM!”. Fortunately, this is not the case, and we strongly advise *not* implementing an SSA construction algorithm in your front-end unless there is an amazingly good reason to do so. In practice, there are two sorts of values that float around in code written for your average imperative programming language that might need Phi nodes:
+
+1. Code that involves user variables: `x = 1; x = x + 1;`
+2. Values that are implicit in the structure of your AST, such as the Phi node in this case.
+
+In [Chapter 7](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/LangImpl07.html) of this tutorial (“mutable variables”), we’ll talk about #1 in depth. For now, just believe me that you don’t need SSA construction to handle this case. For #2, you have the choice of using the techniques that we will describe for #1, or you can insert Phi nodes directly, if convenient. In this case, it is really easy to generate the Phi node, so we choose to do it directly.
+
+Okay, enough of the motivation and overview, let’s generate code!
+
+### 5.2.5. Code Generation for If/Then/Else
+
+In order to generate code for this, we implement the `codegen` method for `IfExprAST`:
+
+```java
+@Override
+public LLVMValueRef codegen() {
+    LLVMValueRef condV = cond.codegen();
+    if (condV == null) {
+        return null;
+    }
+
+    // Convert condition to a bool by comparing non-equal to 0.0.
+    LLVMValueRef zero = LLVMConstReal(LLVMDoubleTypeInContext(CodeGenerator.theContext), 0);
+    condV = LLVMBuildFCmp(CodeGenerator.builder, LLVMRealONE, condV, zero,"cmptmp");
+```
+
+This code is straightforward and similar to what we saw before. We emit the expression for the condition, then compare that value to zero to get a truth value as a 1-bit (bool) value.
+
+```java
+LLVMValueRef theFunction = LLVMGetBasicBlockParent(LLVMGetInsertBlock(CodeGenerator.builder));
+
+// Create blocks for the then and else cases.  Insert the 'then' block at the
+// end of the function.
+LLVMBasicBlockRef thenBB = LLVMAppendBasicBlock(theFunction, "then");
+LLVMBasicBlockRef elseBB = LLVMAppendBasicBlock(theFunction, "else");
+LLVMBasicBlockRef mergeBB = LLVMAppendBasicBlock(theFunction, "ifcont");
+
+LLVMBuildCondBr(CodeGenerator.builder, condV, thenBB, elseBB);
+```
+
+This code creates the basic blocks that are related to the if/then/else statement, and correspond directly to the blocks in the example above. The first line gets the current Function object that is being built. It gets this by asking the builder for the current BasicBlock, and asking that block for its “parent” (the function it is currently embedded into).
+
+Once it has that, it creates three blocks. Note that it passes “theFunction” into the constructor for the “then” block. This causes the constructor to automatically insert the new block into the end of the specified function. The other two blocks are created, but aren’t yet inserted into the function.
+
+Once the blocks are created, we can emit the conditional branch that chooses between them. **Note that creating new blocks does not implicitly affect the IRBuilder, so it is still inserting into the block that the condition went into.** Also note that it is creating a branch to the “then” block and the “else” block, even though the “else” block isn’t inserted into the function yet. This is all ok: it is the standard way that LLVM supports forward references.
+
+```java
+// Emit then value.
+LLVMPositionBuilderAtEnd(CodeGenerator.builder, thenBB);
+
+LLVMValueRef thenV = then.codegen();
+if (thenV == null) {
+    return null;
+}
+
+LLVMBuildBr(CodeGenerator.builder, mergeBB);
+// Codegen of 'Then' can change the current block, update ThenBB for the PHI.
+thenBB = LLVMGetInsertBlock(CodeGenerator.builder);
+```
+
+After the conditional branch is inserted, we move the builder to start inserting into the “then” block. Strictly speaking, this call moves the insertion point to be at the end of the specified block. However, since the “then” block is empty, it also starts out by inserting at the beginning of the block. :)
+
+Once the insertion point is set, we recursively codegen the “then” expression from the AST. To finish off the “then” block, we create an unconditional branch to the merge block. One interesting (and very important) aspect of the LLVM IR is that **it [requires all basic blocks to be “terminated”](https://llvm.org/docs/LangRef.html#functionstructure) with a [control flow instruction](https://llvm.org/docs/LangRef.html#terminators) such as return or branch.** This means that all control flow, *including fall throughs* must be made explicit in the LLVM IR. If you violate this rule, the verifier will emit an error.
+
+The final line here is quite subtle, but is very important. The basic issue is that when we create the Phi node in the merge block, we need to set up the block/value pairs that indicate how the Phi will work. Importantly, the Phi node expects to have an entry for each predecessor of the block in the CFG. Why then, are we getting the current block when we just set it to thenBB 5 lines above? The problem is that the “Then” expression may actually itself change the block that the Builder is emitting into if, for example, it contains a nested “if/then/else” expression. Because calling `codegen()` recursively could arbitrarily change the notion of the current block, we are required to get an up-to-date value for code that will set up the Phi node.
+
+```java
+// Emit else block.
+LLVMPositionBuilderAtEnd(CodeGenerator.builder, elseBB);
+
+LLVMValueRef elseV = Else.codegen();
+if (elseV == null) {
+    return null;
+}
+
+LLVMBuildBr(CodeGenerator.builder, mergeBB);
+// codegen of 'Else' can change the current block, update ElseBB for the PHI.
+elseBB = LLVMGetInsertBlock(CodeGenerator.builder);
+```
+
+Code generation for the ‘else’ block is basically identical to codegen for the ‘then’ block. The only significant difference is the first line, which adds the ‘else’ block to the function. Recall previously that the ‘else’ block was created, but not added to the function. Now that the ‘then’ and ‘else’ blocks are emitted, we can finish up with the merge code:
+
+```java
+    // Emit merge block.
+    LLVMPositionBuilderAtEnd(CodeGenerator.builder, mergeBB);
+    LLVMValueRef phi = LLVMBuildPhi(CodeGenerator.builder, LLVMDoubleTypeInContext(CodeGenerator.theContext), "iftmp");
+
+    PointerPointer<Pointer> phiValues = new PointerPointer<>(2)
+            .put(0, thenV)
+            .put(1, elseV);
+    PointerPointer<Pointer> phiBlocks = new PointerPointer<>(2)
+            .put(0, thenBB)
+            .put(1, elseBB);
+    LLVMAddIncoming(phi, phiValues, phiBlocks, 2);
+
+    return phi;
+}
+```
+
+The first two lines here are now familiar: the first adds the “merge” block to the Function object (it was previously floating, like the else block above). The second changes the insertion point so that newly created code will go into the “merge” block. Once that is done, we need to create the PHI node and set up the block/value pairs for the PHI.
+
+Finally, the CodeGen function returns the phi node as the value computed by the if/then/else expression. In our example above, this returned value will feed into the code for the top-level function, which will create the return instruction.
+
+Overall, we now have the ability to execute conditional code in Kaleidoscope. With this extension, Kaleidoscope is a fairly complete language that can calculate a wide variety of numeric functions. Next up we’ll add another useful expression that is familiar from non-functional languages…
+
+## 5.3. ‘for’ Loop Expression
+
+> 名为for，实际上是do while。
+
+Now that we know how to add basic control flow constructs to the language, we have the tools to add more powerful things. Let’s add something more aggressive, a ‘for’ expression:
+
+```
+extern putchard(char);
+def printstar(n)
+  for i = 1, i < n, 1.0 in
+    putchard(42);  # ascii 42 = '*'
+
+# print 100 '*' characters
+printstar(100);
+```
+
+This expression defines a new variable (“i” in this case) which iterates from a starting value, while the condition (“i < n” in this case) is true, incrementing by an optional step value (“1.0” in this case). If the step value is omitted, it defaults to 1.0. While the loop is true, it executes its body expression. Because we don’t have anything better to return, we’ll just define the loop as always returning 0.0. In the future when we have mutable variables, it will get more useful.
+
+As before, let’s talk about the changes that we need to Kaleidoscope to support this.
+
+### 5.3.1. Lexer Extensions for the ‘for’ Loop
+
+The lexer extensions are the same sort of thing as for if/then/else:
+
+```java
+TOK_FOR(-9),
+TOK_IN(-10);
+```
+
+```java
+if (identifierStr.equals("for")) {
+    return TOK_FOR.getValue();
+}
+if (identifierStr.equals("in")) {
+    return TOK_IN.getValue();
+}
+```
+
+### 5.3.2. AST Extensions for the ‘for’ Loop
+
+The AST node is just as simple. It basically boils down to capturing the variable name and the constituent expressions in the node.
+
+```java
+/// ForExprAST - Expression class for for/in.
+public class ForExprAST extends ExprAST{
+    String varName;
+    ExprAST start;
+    ExprAST end;
+    ExprAST step;
+    ExprAST body;
+
+    public ForExprAST(String varName, ExprAST start, ExprAST end, ExprAST step, ExprAST body) {
+        this.varName = varName;
+        this.start = start;
+        this.end = end;
+        this.step = step;
+        this.body = body;
+    }
+
+    @Override
+    public LLVMValueRef codegen() {
+    	...
+    }
+```
+
+### 5.3.3. Parser Extensions for the ‘for’ Loop
+
+The parser code is also fairly standard. The only interesting thing here is handling of the optional step value. The parser code handles it by checking to see if the second comma is present. If not, it sets the step value to null in the AST node:
+
+```java
+/// forexpr ::= 'for' identifier '=' expr ',' expr (',' expr)? 'in' expression
+public static ExprAST parseForExpr() {
+    getNextToken(); // eat the for.
+
+    if (curTok != TOK_IDENTIFIER.getValue()) {
+        return Logger.logError("expected identifier after for");
+    }
+
+    String idName = Lexer.identifierStr;
+    getNextToken(); // eat identifier.
+
+    if (curTok != '=') {
+        return Logger.logError("expected '=' after for");
+    }
+    getNextToken(); // eat '='.
+
+    ExprAST start = parseExpression();
+    if (start == null) {
+        return null;
+    }
+
+    if (curTok != ',') {
+        return Logger.logError("expected ',' after for start value");
+    }
+    getNextToken();
+
+    ExprAST end = parseExpression();
+    if (end == null) {
+        return null;
+    }
+
+    // The step value is optional.
+    ExprAST step = null;
+    if (curTok == ',') {
+        getNextToken();
+        step = parseExpression();
+        if (step == null) {
+            return null;
+        }
+    }
+
+    if (curTok != TOK_IN.getValue()) {
+        return Logger.logError("expected 'in' after for");
+    }
+    getNextToken();
+
+    ExprAST body = parseExpression();
+    if (body == null) {
+        return null;
+    }
+
+    return new ForExprAST(idName, start, end, step, body);
+}
+```
+
+And again we hook it up as a primary expression:
+
+```java
+/// primary
+///   ::= identifierexpr
+///   ::= numberexpr
+///   ::= parenexpr
+///   ::= ifexpr
+///   ::= forexpr
+public static ExprAST parsePrimary() {
+    if (curTok == TOK_IDENTIFIER.getValue()) {
+        return parseIdentifierExpr();
+    } else if (curTok == TOK_NUMBER.getValue()) {
+        return parseNumberExpr();
+    } else if (curTok == '(') {
+        return parseParenExpr();
+    } else if (curTok == TOK_IF.getValue()){
+        return parseIfExpr();
+    } else if (curTok == TOK_FOR.getValue()) {
+        return parseForExpr();
+    } else {
+        return Logger.logError("unknown token when expecting an expression");
+    }
+}
+```
+
+### 5.3.4. LLVM IR for the ‘for’ Loop
+
+Now we get to the good part: the LLVM IR we want to generate for this thing. With the simple example above, we get this LLVM IR (note that this dump is generated with optimizations disabled for clarity):
+
+```
+declare double @putchard(double)
+
+define double @printstar(double %n) {
+entry:
+  ; initial value = 1.0 (inlined into phi)
+  br label %loop
+
+loop:       ; preds = %loop, %entry
+  %i = phi double [ 1.000000e+00, %entry ], [ %nextvar, %loop ]
+  ; body
+  %calltmp = call double @putchard(double 4.200000e+01)
+  ; increment
+  %nextvar = fadd double %i, 1.000000e+00
+
+  ; termination test
+  %cmptmp = fcmp ult double %i, %n
+  %booltmp = uitofp i1 %cmptmp to double
+  %loopcond = fcmp one double %booltmp, 0.000000e+00
+  br i1 %loopcond, label %loop, label %afterloop
+
+afterloop:      ; preds = %loop
+  ; loop always returns 0.0
+  ret double 0.000000e+00
+}
+```
+
+> 注意：这里的for在执行完entry块后会直接跳转到loop块内，并没有做一次判断。所以实际上是有初始化的do while。
+
+This loop contains all the same constructs we saw before: a phi node, several expressions, and some basic blocks. Let’s see how this fits together.
+
+### 5.3.5. Code Generation for the ‘for’ Loop
+
+The first part of codegen is very simple: we just output the start expression for the loop value:
+
+```java
+@Override
+public LLVMValueRef codegen() {
+    // Emit the start code first, without 'variable' in scope.
+    LLVMValueRef startVal = start.codegen();
+    if (startVal == null) {
+        return null;
+    }
+```
+
+With this out of the way, the next step is to set up the LLVM basic block for the start of the loop body. In the case above, the whole loop body is one block, but remember that the body code itself could consist of multiple blocks (e.g. if it contains an if/then/else or a for/in expression).
+
+```java
+// Make the new basic block for the loop header, inserting after current
+// block.
+LLVMValueRef theFunction = LLVMGetBasicBlockParent(LLVMGetInsertBlock(CodeGenerator.builder));
+LLVMBasicBlockRef preheaderBB = LLVMGetInsertBlock(CodeGenerator.builder);
+LLVMBasicBlockRef loopBB = LLVMAppendBasicBlock(theFunction, "loop");
+
+// Insert an explicit fall through from the current block to the LoopBB.
+LLVMBuildBr(CodeGenerator.builder, loopBB);
+```
+
+This code is similar to what we saw for if/then/else. Because we will need it to create the Phi node, we remember the block that falls through into the loop. Once we have that, we create the actual block that starts the loop and create an unconditional branch for the fall-through between the two blocks.
+
+```java
+// Start insertion in LoopBB.
+LLVMPositionBuilderAtEnd(CodeGenerator.builder, loopBB);
+
+// Start the PHI node with an entry for Start.
+LLVMValueRef variable = LLVMBuildPhi(CodeGenerator.builder, LLVMDoubleTypeInContext(CodeGenerator.theContext), varName);
+```
+
+Now that the “preheader” for the loop is set up, we switch to emitting code for the loop body. To begin with, we move the insertion point and create the PHI node for the loop induction variable. Note that the Phi will eventually get a second value for the backedge, but we can’t set it up yet (because the second doesn’t exist!).
+
+```java
+// Within the loop, the variable is defined equal to the PHI node.  If it
+// shadows an existing variable, we have to restore it, so save it now.
+LLVMValueRef oldVal = CodeGenerator.namedValues.get(varName);
+CodeGenerator.namedValues.put(varName, variable);
+
+// Emit the body of the loop.  This, like any other expr, can change the
+// current BB.  Note that we ignore the value computed by the body, but don't
+// allow an error.
+LLVMValueRef bodyVal = body.codegen();
+if (bodyVal == null) {
+    return null;
+}
+```
+
+Now the code starts to get more interesting. Our ‘for’ loop introduces a new variable to the symbol table. This means that our symbol table can now contain either function arguments or loop variables. To handle this, before we codegen the body of the loop, we add the loop variable as the current value for its name. Note that it is possible that there is a variable of the same name in the outer scope. It would be easy to make this an error (emit an error and return null if there is already an entry for VarName) but we choose to allow shadowing of variables. In order to handle this correctly, we remember the Value that we are potentially shadowing in `OldVal` (which will be null if there is no shadowed variable).
+
+Once the loop variable is set into the symbol table, the code recursively codegen’s the body. This allows the body to use the loop variable: any references to it will naturally find it in the symbol table.
+
+```java
+// Emit the step value.
+LLVMValueRef stepVal;
+if (step != null) {
+    stepVal = step.codegen();
+    if (stepVal == null) {
+        return null;
+    }
+} else {
+    // If not specified, use 1.0.
+    stepVal = LLVMConstReal(LLVMDoubleTypeInContext(CodeGenerator.theContext), 1);
+}
+
+LLVMValueRef nextVar = LLVMBuildFAdd(CodeGenerator.builder, variable, stepVal, "nextvar");
+```
+
+Now that the body is emitted, we compute the next value of the iteration variable by adding the step value, or 1.0 if it isn’t present. ‘`NextVar`’ will be the value of the loop variable on the next iteration of the loop.
+
+```java
+// Compute the end condition.
+LLVMValueRef endCond = end.codegen();
+if (endCond == null) {
+    return null;
+}
+
+// Convert condition to a bool by comparing non-equal to 0.0.
+LLVMValueRef zero = LLVMConstReal(LLVMDoubleTypeInContext(CodeGenerator.theContext), 0);
+endCond = LLVMBuildFCmp(CodeGenerator.builder, LLVMRealONE, endCond, zero,"loopcond");
+```
+
+Finally, we evaluate the exit value of the loop, to determine whether the loop should exit. This mirrors the condition evaluation for the if/then/else statement.
+
+```java
+// Create the "after loop" block and insert it.
+LLVMBasicBlockRef loopEndBB = LLVMGetInsertBlock(CodeGenerator.builder);
+LLVMBasicBlockRef afterBB = LLVMAppendBasicBlock(theFunction, "afterloop");
+
+// Insert the conditional branch into the end of LoopEndBB.
+LLVMBuildCondBr(CodeGenerator.builder, endCond, loopBB, afterBB);
+
+// Any new code will be inserted in AfterBB.
+LLVMPositionBuilderAtEnd(CodeGenerator.builder, afterBB);
+```
+
+With the code for the body of the loop complete, we just need to finish up the control flow for it. This code remembers the end block (for the phi node), then creates the block for the loop exit (“afterloop”). Based on the value of the exit condition, it creates a conditional branch that chooses between executing the loop again and exiting the loop. Any future code is emitted in the “afterloop” block, so it sets the insertion position to it.
+
+```java
+    // Add a new entry to the PHI node for the backedge.
+    PointerPointer<Pointer> phiValues = new PointerPointer<>(2)
+            .put(0, startVal)
+            .put(1, nextVar);
+    PointerPointer<Pointer> phiBlocks = new PointerPointer<>(2)
+            .put(0, preheaderBB)
+            .put(1, loopEndBB);
+    LLVMAddIncoming(variable, phiValues, phiBlocks, 2);
+
+    // Restore the unshadowed variable.
+    if (oldVal != null) {
+        CodeGenerator.namedValues.put(varName, oldVal);
+    } else {
+        CodeGenerator.namedValues.remove(varName);
+    }
+
+    // for expr always returns 0.0.
+    return zero;
+}
+```
+
+The final code handles various cleanups: now that we have the “NextVar” value, we can add the incoming value to the loop PHI node. After that, we remove the loop variable from the symbol table, so that it isn’t in scope after the for loop. Finally, code generation of the for loop always returns 0.0, so that is what we return from `ForExprAST.codegen()`.
+
+With this, we conclude the “adding control flow to Kaleidoscope” chapter of the tutorial. In this chapter we added two control flow constructs, and used them to motivate a couple of aspects of the LLVM IR that are important for front-end implementors to know. In the next chapter of our saga, we will get a bit crazier and add [user-defined operators](https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/LangImpl06.html) to our poor innocent language.
