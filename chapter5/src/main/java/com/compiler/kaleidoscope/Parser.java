@@ -115,6 +115,7 @@ public class Parser {
     ///   ::= numberexpr
     ///   ::= parenexpr
     ///   ::= ifexpr
+    ///   ::= forexpr
     public static ExprAST parsePrimary() {
         if (curTok == TOK_IDENTIFIER.getValue()) {
             return parseIdentifierExpr();
