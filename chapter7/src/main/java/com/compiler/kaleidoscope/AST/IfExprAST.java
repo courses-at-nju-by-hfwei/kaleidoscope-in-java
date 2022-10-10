@@ -30,7 +30,7 @@ public class IfExprAST extends ExprAST{
         }
 
         // Convert condition to a bool by comparing non-equal to 0.0.
-        condV = LLVMBuildFCmp(CodeGenerator.builder, LLVMRealONE, condV, Common.ZERO,"cmptmp");
+        condV = LLVMBuildFCmp(CodeGenerator.builder, LLVMRealONE, condV, Common.ZERO,"ifcond");
 
         LLVMValueRef theFunction = LLVMGetBasicBlockParent(LLVMGetInsertBlock(CodeGenerator.builder));
 
