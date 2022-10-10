@@ -66,7 +66,7 @@ public class FunctionAST {
         LLVMVerifyFunction(theFunction, LLVMAbortProcessAction);
 
         // Optimize the function.
-//        LLVMRunFunctionPassManager(CodeGenerator.theFPM, theFunction);
+        LLVMRunFunctionPassManager(CodeGenerator.theFPM, theFunction);
 
         return theFunction;
     }
