@@ -26,6 +26,8 @@ public class CodeGenerator {
         // Create a new pass manager attached to it.
         theFPM = LLVMCreateFunctionPassManagerForModule(theModule);
 
+        // Promote allocas to registers.
+        LLVMAddPromoteMemoryToRegisterPass(theFPM);
         // Do simple "peephole" optimizations and bit-twiddling optzns.
         LLVMAddInstructionCombiningPass(theFPM);
         // Reassociate expressions.

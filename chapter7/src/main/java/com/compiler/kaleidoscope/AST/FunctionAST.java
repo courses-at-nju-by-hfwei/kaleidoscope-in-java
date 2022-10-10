@@ -2,6 +2,7 @@ package com.compiler.kaleidoscope.AST;
 
 import com.compiler.kaleidoscope.CodeGenerator;
 import com.compiler.kaleidoscope.Parser;
+import com.compiler.kaleidoscope.utils.AllocaHelper;
 import org.bytedeco.llvm.LLVM.LLVMBasicBlockRef;
 import org.bytedeco.llvm.LLVM.LLVMValueRef;
 
@@ -48,7 +49,13 @@ public class FunctionAST {
         for (int i = 0; i < argCount; ++i) {
             LLVMValueRef arg = LLVMGetParam(theFunction, i);
             String name = proto.args.get(i);
-            CodeGenerator.namedValues.put(name, arg);
+
+            // Create an alloca for this variable.
+            LLVMValueRef alloca = AllocaHelper.createEntryBlockAlloca(theFunction, name);
+
+            // Store the initial value into the alloca.
+            LLVMBuildStore(CodeGenerator.builder, arg, alloca);
+            CodeGenerator.namedValues.put(name, alloca);
         }
 
         LLVMValueRef retVal = body.codegen();
@@ -66,7 +73,7 @@ public class FunctionAST {
         LLVMVerifyFunction(theFunction, LLVMAbortProcessAction);
 
         // Optimize the function.
-//        LLVMRunFunctionPassManager(CodeGenerator.theFPM, theFunction);
+        LLVMRunFunctionPassManager(CodeGenerator.theFPM, theFunction);
 
         return theFunction;
     }

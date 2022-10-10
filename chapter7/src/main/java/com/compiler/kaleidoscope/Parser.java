@@ -3,12 +3,11 @@ package com.compiler.kaleidoscope;
 import com.compiler.kaleidoscope.AST.*;
 import com.compiler.kaleidoscope.utils.Logger;
 import org.apache.commons.lang3.CharUtils;
+import org.apache.commons.lang3.tuple.MutablePair;
+import org.apache.commons.lang3.tuple.Pair;
 
 import java.io.IOException;
-import java.util.HashMap;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 import static com.compiler.kaleidoscope.Token.*;
 
@@ -25,6 +24,7 @@ public class Parser {
     static {
         // Install standard binary operators.
         // 1 is lowest precedence.
+        binopPrecedence.put((int) '=', 2);
         binopPrecedence.put((int) '<', 10);
         binopPrecedence.put((int) '+', 20);
         binopPrecedence.put((int) '-', 20);
@@ -117,6 +117,7 @@ public class Parser {
     ///   ::= parenexpr
     ///   ::= ifexpr
     ///   ::= forexpr
+    ///   ::= varexpr
     public static ExprAST parsePrimary() {
         if (curTok == TOK_IDENTIFIER.getValue()) {
             return parseIdentifierExpr();
@@ -128,7 +129,10 @@ public class Parser {
             return parseIfExpr();
         } else if (curTok == TOK_FOR.getValue()) {
             return parseForExpr();
-        } else {
+        } else if (curTok == TOK_VAR.getValue()) {
+            return parseVarExpr();
+        }
+        else {
             return Logger.logError("unknown token when expecting an expression");
         }
     }
@@ -374,6 +378,59 @@ public class Parser {
             return new UnaryExprAST((char) op, operand);
         }
         return null;
+    }
+
+    /// varexpr ::= 'var' identifier ('=' expression)?
+    //                    (',' identifier ('=' expression)?)* 'in' expression
+    private static ExprAST parseVarExpr() {
+        getNextToken(); // eat the var.
+        List<Pair<String, ExprAST>> varNames = new ArrayList<>();
+
+        // At least one variable name is required.
+        if (curTok != TOK_IDENTIFIER.getValue()) {
+            return Logger.logError("expected identifier after var");
+        }
+
+        while (true) {
+            String name = Lexer.identifierStr;
+            getNextToken(); // eat identifier.
+
+            // Read the optional initializer.
+            ExprAST init = null;
+            if (curTok == '=') {
+                getNextToken(); // eat the '='.
+
+                init = parseExpression();
+                if (init == null) {
+                    return null;
+                }
+            }
+
+            varNames.add(new MutablePair<>(name, init));
+
+            // End of var list, exit loop.
+            if (curTok != ',') {
+                break;
+            }
+            getNextToken(); // eat the ','.
+
+            if (curTok != TOK_IDENTIFIER.getValue()) {
+                return Logger.logError("expected identifier list after var");
+            }
+        }
+
+        // At this point, we have to have 'in'.
+        if (curTok != TOK_IN.getValue()) {
+            return Logger.logError("expected 'in' keyword after 'var'");
+        }
+        getNextToken(); // eat 'in'.
+
+        ExprAST body = parseExpression();
+        if (body == null) {
+            return null;
+        }
+
+        return new VarExprAST(varNames, body);
     }
 
     private static int anonCount = 0;

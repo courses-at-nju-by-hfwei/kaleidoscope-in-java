@@ -57,6 +57,9 @@ public class Lexer {
             if (identifierStr.equals("unary")) {
                 return TOK_UNARY.getValue();
             }
+            if (identifierStr.equals("var")) {
+                return TOK_VAR.getValue();
+            }
             return TOK_IDENTIFIER.getValue();
         }
 

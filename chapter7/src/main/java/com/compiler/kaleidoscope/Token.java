@@ -20,7 +20,8 @@ public enum Token {
     TOK_FOR(-9),
     TOK_IN(-10),
     TOK_BINARY(-11),
-    TOK_UNARY(-12);
+    TOK_UNARY(-12),
+    TOK_VAR(-13);
 
     private final int value;
 

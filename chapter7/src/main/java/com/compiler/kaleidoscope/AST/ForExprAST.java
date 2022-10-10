@@ -1,9 +1,8 @@
 package com.compiler.kaleidoscope.AST;
 
 import com.compiler.kaleidoscope.CodeGenerator;
+import com.compiler.kaleidoscope.utils.AllocaHelper;
 import com.compiler.kaleidoscope.utils.Common;
-import org.bytedeco.javacpp.Pointer;
-import org.bytedeco.javacpp.PointerPointer;
 import org.bytedeco.llvm.LLVM.LLVMBasicBlockRef;
 import org.bytedeco.llvm.LLVM.LLVMValueRef;
 
@@ -27,15 +26,22 @@ public class ForExprAST extends ExprAST{
 
     @Override
     public LLVMValueRef codegen() {
+        LLVMValueRef theFunction = LLVMGetBasicBlockParent(LLVMGetInsertBlock(CodeGenerator.builder));
+
+        // Create an alloca for the variable in the entry block.
+        LLVMValueRef alloca = AllocaHelper.createEntryBlockAlloca(theFunction, varName);
+
         // Emit the start code first, without 'variable' in scope.
         LLVMValueRef startVal = start.codegen();
         if (startVal == null) {
             return null;
         }
 
+        // Store the value into the alloca.
+        LLVMBuildStore(CodeGenerator.builder, startVal, alloca);
+
         // Make the new basic block for the loop header, inserting after current
         // block.
-        LLVMValueRef theFunction = LLVMGetBasicBlockParent(LLVMGetInsertBlock(CodeGenerator.builder));
         LLVMBasicBlockRef preheaderBB = LLVMGetInsertBlock(CodeGenerator.builder);
         LLVMBasicBlockRef loopBB = LLVMAppendBasicBlock(theFunction, "loop");
 
@@ -45,13 +51,10 @@ public class ForExprAST extends ExprAST{
         // Start insertion in LoopBB.
         LLVMPositionBuilderAtEnd(CodeGenerator.builder, loopBB);
 
-        // Start the PHI node with an entry for Start.
-        LLVMValueRef variable = LLVMBuildPhi(CodeGenerator.builder, Common.DOUBLE_TYPE, varName);
-
         // Within the loop, the variable is defined equal to the PHI node.  If it
         // shadows an existing variable, we have to restore it, so save it now.
         LLVMValueRef oldVal = CodeGenerator.namedValues.get(varName);
-        CodeGenerator.namedValues.put(varName, variable);
+        CodeGenerator.namedValues.put(varName, alloca);
 
         // Emit the body of the loop.  This, like any other expr, can change the
         // current BB.  Note that we ignore the value computed by the body, but don't
@@ -70,16 +73,20 @@ public class ForExprAST extends ExprAST{
             }
         } else {
             // If not specified, use 1.0.
-            stepVal = LLVMConstReal(LLVMDoubleTypeInContext(CodeGenerator.theContext), 1);
+            stepVal = Common.ONE;
         }
-
-        LLVMValueRef nextVar = LLVMBuildFAdd(CodeGenerator.builder, variable, stepVal, "nextvar");
 
         // Compute the end condition.
         LLVMValueRef endCond = end.codegen();
         if (endCond == null) {
             return null;
         }
+
+        // Reload, increment, and restore the alloca.  This handles the case where
+        // the body of the loop mutates the variable.
+        LLVMValueRef curVar = LLVMBuildLoad2(CodeGenerator.builder, Common.DOUBLE_TYPE, alloca, varName);
+        LLVMValueRef nextVar = LLVMBuildFAdd(CodeGenerator.builder, curVar, stepVal, "nextvar");
+        LLVMBuildStore(CodeGenerator.builder, nextVar, alloca);
 
         // Convert condition to a bool by comparing non-equal to 0.0.
         endCond = LLVMBuildFCmp(CodeGenerator.builder, LLVMRealONE, endCond, Common.ZERO,"loopcond");
@@ -93,15 +100,6 @@ public class ForExprAST extends ExprAST{
 
         // Any new code will be inserted in AfterBB.
         LLVMPositionBuilderAtEnd(CodeGenerator.builder, afterBB);
-
-        // Add a new entry to the PHI node for the backedge.
-        PointerPointer<Pointer> phiValues = new PointerPointer<>(2)
-                .put(0, startVal)
-                .put(1, nextVar);
-        PointerPointer<Pointer> phiBlocks = new PointerPointer<>(2)
-                .put(0, preheaderBB)
-                .put(1, loopEndBB);
-        LLVMAddIncoming(variable, phiValues, phiBlocks, 2);
 
         // Restore the unshadowed variable.
         if (oldVal != null) {

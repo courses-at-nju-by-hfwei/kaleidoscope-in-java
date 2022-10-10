@@ -2,6 +2,7 @@ package com.compiler.kaleidoscope.AST;
 
 import com.compiler.kaleidoscope.CodeGenerator;
 import com.compiler.kaleidoscope.utils.Common;
+import com.compiler.kaleidoscope.utils.Logger;
 import org.bytedeco.javacpp.Pointer;
 import org.bytedeco.javacpp.PointerPointer;
 import org.bytedeco.llvm.LLVM.LLVMValueRef;
@@ -21,6 +22,29 @@ public class BinaryExprAST extends ExprAST {
 
     @Override
     public LLVMValueRef codegen() {
+        // Special case '=' because we don't want to emit the LHS as an expression.
+        if (op == '=') {
+            // Assignment requires the LHS to be an identifier.
+            if (!(LHS instanceof VariableExprAST LHSE)) {
+                return Logger.logErrorV("destination of '=' must be a variable");
+            }
+
+            // Codegen the RHS.
+            LLVMValueRef val = RHS.codegen();
+            if (val == null) {
+                return null;
+            }
+
+            // Look up the name.
+            LLVMValueRef variable = CodeGenerator.namedValues.get(LHSE.getName());
+            if (variable == null) {
+                return Logger.logErrorV("Unknown variable name");
+            }
+
+            LLVMBuildStore(CodeGenerator.builder, val, variable);
+            return val;
+        }
+
         LLVMValueRef L = LHS.codegen();
         LLVMValueRef R = RHS.codegen();
         if (L == null || R == null) {
