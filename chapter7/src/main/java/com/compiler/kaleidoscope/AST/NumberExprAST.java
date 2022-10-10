@@ -1,10 +1,9 @@
 package com.compiler.kaleidoscope.AST;
 
-import com.compiler.kaleidoscope.CodeGenerator;
-import org.bytedeco.llvm.LLVM.LLVMTypeRef;
+import com.compiler.kaleidoscope.utils.Common;
 import org.bytedeco.llvm.LLVM.LLVMValueRef;
 
-import static org.bytedeco.llvm.global.LLVM.*;
+import static org.bytedeco.llvm.global.LLVM.LLVMConstReal;
 
 /// NumberExprAST - Expression class for numeric literals like "1.0".
 public class NumberExprAST extends ExprAST {
@@ -16,7 +15,6 @@ public class NumberExprAST extends ExprAST {
 
     @Override
     public LLVMValueRef codegen() {
-        LLVMTypeRef doubleType = LLVMDoubleTypeInContext(CodeGenerator.theContext);
-        return LLVMConstReal(doubleType, val);
+        return LLVMConstReal(Common.DOUBLE_TYPE, val);
     }
 }

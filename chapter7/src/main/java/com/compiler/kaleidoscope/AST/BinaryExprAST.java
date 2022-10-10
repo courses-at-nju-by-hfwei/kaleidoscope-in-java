@@ -1,6 +1,7 @@
 package com.compiler.kaleidoscope.AST;
 
 import com.compiler.kaleidoscope.CodeGenerator;
+import com.compiler.kaleidoscope.utils.Common;
 import org.bytedeco.javacpp.Pointer;
 import org.bytedeco.javacpp.PointerPointer;
 import org.bytedeco.llvm.LLVM.LLVMValueRef;
@@ -36,7 +37,7 @@ public class BinaryExprAST extends ExprAST {
             case '<':
                 L = LLVMBuildFCmp(CodeGenerator.builder, LLVMRealOLT, L, R,"cmptmp");
                 // Convert bool 0/1 to double 0.0 or 1.0
-                return LLVMBuildUIToFP(CodeGenerator.builder, L, LLVMDoubleTypeInContext(CodeGenerator.theContext),"booltmp");
+                return LLVMBuildUIToFP(CodeGenerator.builder, L, Common.DOUBLE_TYPE,"booltmp");
             default:
                 break;
         }

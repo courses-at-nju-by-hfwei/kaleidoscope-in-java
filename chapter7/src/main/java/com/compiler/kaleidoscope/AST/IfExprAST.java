@@ -1,6 +1,7 @@
 package com.compiler.kaleidoscope.AST;
 
 import com.compiler.kaleidoscope.CodeGenerator;
+import com.compiler.kaleidoscope.utils.Common;
 import org.bytedeco.javacpp.Pointer;
 import org.bytedeco.javacpp.PointerPointer;
 import org.bytedeco.llvm.LLVM.LLVMBasicBlockRef;
@@ -29,8 +30,7 @@ public class IfExprAST extends ExprAST{
         }
 
         // Convert condition to a bool by comparing non-equal to 0.0.
-        LLVMValueRef zero = LLVMConstReal(LLVMDoubleTypeInContext(CodeGenerator.theContext), 0);
-        condV = LLVMBuildFCmp(CodeGenerator.builder, LLVMRealONE, condV, zero,"cmptmp");
+        condV = LLVMBuildFCmp(CodeGenerator.builder, LLVMRealONE, condV, Common.ZERO,"cmptmp");
 
         LLVMValueRef theFunction = LLVMGetBasicBlockParent(LLVMGetInsertBlock(CodeGenerator.builder));
 
@@ -68,7 +68,7 @@ public class IfExprAST extends ExprAST{
 
         // Emit merge block.
         LLVMPositionBuilderAtEnd(CodeGenerator.builder, mergeBB);
-        LLVMValueRef phi = LLVMBuildPhi(CodeGenerator.builder, LLVMDoubleTypeInContext(CodeGenerator.theContext), "iftmp");
+        LLVMValueRef phi = LLVMBuildPhi(CodeGenerator.builder, Common.DOUBLE_TYPE, "iftmp");
 
         PointerPointer<Pointer> phiValues = new PointerPointer<>(2)
                 .put(0, thenV)

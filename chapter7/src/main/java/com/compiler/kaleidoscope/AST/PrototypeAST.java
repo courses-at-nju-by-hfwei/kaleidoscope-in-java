@@ -1,6 +1,7 @@
 package com.compiler.kaleidoscope.AST;
 
 import com.compiler.kaleidoscope.CodeGenerator;
+import com.compiler.kaleidoscope.utils.Common;
 import org.bytedeco.javacpp.PointerPointer;
 import org.bytedeco.llvm.LLVM.LLVMTypeRef;
 import org.bytedeco.llvm.LLVM.LLVMValueRef;
@@ -51,7 +52,7 @@ public class PrototypeAST {
         int argCount = args.size();
         PointerPointer<LLVMTypeRef> paramTypes = new PointerPointer<>(argCount);
         for (int i = 0; i < argCount; ++i) {
-            paramTypes.put(i, LLVMDoubleTypeInContext(CodeGenerator.theContext));
+            paramTypes.put(i, Common.DOUBLE_TYPE);
         }
 
         LLVMTypeRef retType = LLVMFunctionType(LLVMDoubleTypeInContext(CodeGenerator.theContext), paramTypes, argCount, 0);

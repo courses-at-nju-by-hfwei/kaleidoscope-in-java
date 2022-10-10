@@ -1,6 +1,7 @@
 package com.compiler.kaleidoscope.AST;
 
 import com.compiler.kaleidoscope.CodeGenerator;
+import com.compiler.kaleidoscope.utils.Common;
 import org.bytedeco.javacpp.Pointer;
 import org.bytedeco.javacpp.PointerPointer;
 import org.bytedeco.llvm.LLVM.LLVMBasicBlockRef;
@@ -45,7 +46,7 @@ public class ForExprAST extends ExprAST{
         LLVMPositionBuilderAtEnd(CodeGenerator.builder, loopBB);
 
         // Start the PHI node with an entry for Start.
-        LLVMValueRef variable = LLVMBuildPhi(CodeGenerator.builder, LLVMDoubleTypeInContext(CodeGenerator.theContext), varName);
+        LLVMValueRef variable = LLVMBuildPhi(CodeGenerator.builder, Common.DOUBLE_TYPE, varName);
 
         // Within the loop, the variable is defined equal to the PHI node.  If it
         // shadows an existing variable, we have to restore it, so save it now.
@@ -81,8 +82,7 @@ public class ForExprAST extends ExprAST{
         }
 
         // Convert condition to a bool by comparing non-equal to 0.0.
-        LLVMValueRef zero = LLVMConstReal(LLVMDoubleTypeInContext(CodeGenerator.theContext), 0);
-        endCond = LLVMBuildFCmp(CodeGenerator.builder, LLVMRealONE, endCond, zero,"loopcond");
+        endCond = LLVMBuildFCmp(CodeGenerator.builder, LLVMRealONE, endCond, Common.ZERO,"loopcond");
 
         // Create the "after loop" block and insert it.
         LLVMBasicBlockRef loopEndBB = LLVMGetInsertBlock(CodeGenerator.builder);
@@ -111,6 +111,6 @@ public class ForExprAST extends ExprAST{
         }
 
         // for expr always returns 0.0.
-        return zero;
+        return Common.ZERO;
     }
 }
