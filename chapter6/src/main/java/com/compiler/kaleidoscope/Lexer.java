@@ -51,6 +51,12 @@ public class Lexer {
             if (identifierStr.equals("in")) {
                 return TOK_IN.getValue();
             }
+            if (identifierStr.equals("binary")) {
+                return TOK_BINARY.getValue();
+            }
+            if (identifierStr.equals("unary")) {
+                return TOK_UNARY.getValue();
+            }
             return TOK_IDENTIFIER.getValue();
         }
 

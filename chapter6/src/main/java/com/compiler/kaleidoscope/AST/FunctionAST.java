@@ -1,6 +1,7 @@
 package com.compiler.kaleidoscope.AST;
 
 import com.compiler.kaleidoscope.CodeGenerator;
+import com.compiler.kaleidoscope.Parser;
 import org.bytedeco.llvm.LLVM.LLVMBasicBlockRef;
 import org.bytedeco.llvm.LLVM.LLVMValueRef;
 
@@ -31,6 +32,11 @@ public class FunctionAST {
          *   if (!TheFunction->empty())
          *     return (Function*)LogErrorV("Function cannot be redefined.");
          */
+
+        // If this is an operator, install it.
+        if (proto.isBinaryOp()) {
+            Parser.binopPrecedence.put((int) proto.getOperatorName(), proto.getBinaryPrecedence());
+        }
 
         // Create a new basic block to start insertion into.
         LLVMBasicBlockRef entry = LLVMAppendBasicBlock(theFunction, "entry");

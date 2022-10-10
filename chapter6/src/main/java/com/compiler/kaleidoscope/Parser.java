@@ -2,6 +2,7 @@ package com.compiler.kaleidoscope;
 
 import com.compiler.kaleidoscope.AST.*;
 import com.compiler.kaleidoscope.utils.Logger;
+import org.apache.commons.lang3.CharUtils;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -19,7 +20,7 @@ public class Parser {
 
     /// BinopPrecedence - This holds the precedence for each binary operator that is
     /// defined.
-    static Map<Integer, Integer> binopPrecedence = new HashMap<>();
+    public static Map<Integer, Integer> binopPrecedence = new HashMap<>();
 
     static {
         // Install standard binary operators.
@@ -133,9 +134,9 @@ public class Parser {
     }
 
     /// expression
-    ///       ::= primary binoprhs
+    ///       ::= unary binoprhs
     public static ExprAST parseExpression() {
-        ExprAST LHS = parsePrimary();
+        ExprAST LHS = parseUnary();
         if (LHS == null) {
             return null;
         }
@@ -143,7 +144,7 @@ public class Parser {
     }
 
     /// binoprhs
-    ///   ::= ('+' primary)*
+    ///   ::= ('+' unary)*
     public static ExprAST parseBinOpRHS(int exprPrec, ExprAST LHS) {
         // If this is a binop, find its precedence.
         while (true) {
@@ -159,8 +160,8 @@ public class Parser {
             int binOp = curTok;
             getNextToken(); // eat binop
 
-            // Parse the primary expression after the binary operator.
-            ExprAST RHS = parsePrimary();
+            // Parse the unary expression after the binary operator.
+            ExprAST RHS = parseUnary();
             if (RHS == null) {
                 return null;
             }
@@ -182,13 +183,47 @@ public class Parser {
 
     /// prototype
     ///   ::= id '(' id* ')'
+    ///   ::= binary LETTER number? (id, id)
+    ///   ::= unary LETTER (id)
     public static PrototypeAST parsePrototype() {
-        if (curTok != TOK_IDENTIFIER.getValue()) {
-            return Logger.logErrorP("Expected function in prototype");
-        }
+        String fnName;
+        int kind; // 0 = identifier, 1 = unary, 2 = binary.
+        int binaryPrecedence = 30;
 
-        String fnName = Lexer.identifierStr;
-        getNextToken();
+        if (curTok == TOK_IDENTIFIER.getValue()) {
+            fnName = Lexer.identifierStr;
+            kind = 0;
+            getNextToken();
+        } else if (curTok == TOK_BINARY.getValue()) {
+            getNextToken();
+            if (!CharUtils.isAscii((char) curTok)) {
+                return Logger.logErrorP("Expected binary operator");
+            }
+            fnName = "binary";
+            fnName += (char) curTok;
+            kind = 2;
+            getNextToken();
+
+            // Read the precedence if present.
+            if (curTok == TOK_NUMBER.getValue()) {
+                if (Lexer.numVal < 1 || Lexer.numVal > 100) {
+                    return Logger.logErrorP("Invalid precedence: must be 1..100");
+                }
+                binaryPrecedence = (int) Lexer.numVal;
+                getNextToken();
+            }
+        } else if (curTok == TOK_UNARY.getValue()) {
+            getNextToken();
+            if (!CharUtils.isAscii((char) curTok)) {
+                return Logger.logErrorP("Expected unary operator");
+            }
+            fnName = "unary";
+            fnName += (char) curTok;
+            kind = 1;
+            getNextToken();
+        } else {
+            return Logger.logErrorP("Expected function name in prototype");
+        }
 
         if (curTok != '(') {
             return Logger.logErrorP("Expected '(' in prototype");
@@ -206,7 +241,12 @@ public class Parser {
         // success.
         getNextToken(); // eat ')'.
 
-        return new PrototypeAST(fnName, argNames);
+        // Verify right number of names for operator.
+        if (kind != 0 && argNames.size() != kind) {
+            return Logger.logErrorP("Invalid number of operands for operator");
+        }
+
+        return new PrototypeAST(fnName, argNames, kind != 0, binaryPrecedence);
     }
 
     /// definition ::= 'def' prototype expression
@@ -317,6 +357,25 @@ public class Parser {
         return new ForExprAST(idName, start, end, step, body);
     }
 
+    /// unary
+    ///   ::= primary
+    ///   ::= '!' unary
+    public static ExprAST parseUnary() {
+        // If the current token is not an operator, it must be a primary expr.
+        if (!CharUtils.isAscii((char) curTok) || curTok == '(' || curTok == ',') {
+            return parsePrimary();
+        }
+
+        // If this is a unary operator, read it.
+        int op = curTok;
+        getNextToken();
+        ExprAST operand = parseUnary();
+        if (operand != null) {
+            return new UnaryExprAST((char) op, operand);
+        }
+        return null;
+    }
+
     private static int anonCount = 0;
 
     /// toplevelexpr ::= expression
@@ -326,7 +385,7 @@ public class Parser {
             return null;
         }
         // Make an anonymous proto.
-        PrototypeAST proto = new PrototypeAST("__anon_func" + anonCount++, new LinkedList<>());
+        PrototypeAST proto = new PrototypeAST("__anon_func" + anonCount++, new LinkedList<>(), false, 0);
         return new FunctionAST(proto, E);
     }
 }

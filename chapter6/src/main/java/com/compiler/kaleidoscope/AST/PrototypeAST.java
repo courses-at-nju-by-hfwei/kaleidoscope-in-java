@@ -15,14 +15,35 @@ import static org.bytedeco.llvm.global.LLVM.*;
 public class PrototypeAST {
     String name;
     List<String> args;
+    boolean isOperator;
+    int precedence;
 
-    public PrototypeAST(String name, List<String> args) {
+    public PrototypeAST(String name, List<String> args, boolean isOperator, int precedence) {
         this.name = name;
         this.args = args;
+        this.isOperator = isOperator;
+        this.precedence = precedence;
     }
 
     public String getName() {
         return this.name;
+    }
+
+    public boolean isUnaryOp() {
+        return isOperator && args.size() == 1;
+    }
+
+    public boolean isBinaryOp() {
+        return isOperator && args.size() == 2;
+    }
+
+    public char getOperatorName() {
+        assert(isUnaryOp() || isBinaryOp());
+        return this.name.toCharArray()[this.name.length() - 1];
+    }
+
+    public int getBinaryPrecedence() {
+        return this.precedence;
     }
 
     public LLVMValueRef codegen() {

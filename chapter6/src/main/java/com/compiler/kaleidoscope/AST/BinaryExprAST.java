@@ -1,7 +1,8 @@
 package com.compiler.kaleidoscope.AST;
 
 import com.compiler.kaleidoscope.CodeGenerator;
-import com.compiler.kaleidoscope.utils.Logger;
+import org.bytedeco.javacpp.Pointer;
+import org.bytedeco.javacpp.PointerPointer;
 import org.bytedeco.llvm.LLVM.LLVMValueRef;
 
 import static org.bytedeco.llvm.global.LLVM.*;
@@ -37,7 +38,17 @@ public class BinaryExprAST extends ExprAST {
                 // Convert bool 0/1 to double 0.0 or 1.0
                 return LLVMBuildUIToFP(CodeGenerator.builder, L, LLVMDoubleTypeInContext(CodeGenerator.theContext),"booltmp");
             default:
-                return Logger.logErrorV("invalid binary operator");
+                break;
         }
+
+        // If it wasn't a builtin binary operator, it must be a user defined one. Emit
+        // a call to it.
+        LLVMValueRef F = LLVMGetNamedFunction(CodeGenerator.theModule, "binary" + op);
+        assert(F != null);
+
+        PointerPointer<Pointer> ops = new PointerPointer<>(2)
+                .put(0, L)
+                .put(1, R);
+        return LLVMBuildCall(CodeGenerator.builder, F, ops, 2,"binop");
     }
 }
